@@ -11,8 +11,7 @@ from storescraper.utils import session_with_proxy, remove_words, \
 
 class Vtr(Store):
     prepago_url = 'https://vtr.com/productos/moviles/prepago'
-    planes_url = 'https://vtr.com/productos/moviles/product.clasificacion/' \
-                 'MovilesPlanes/'
+    planes_url = 'https://www.vtr.com/moviles/MovilesPlanes-planes-multimedia/'
 
     @classmethod
     def categories(cls):
@@ -79,49 +78,38 @@ class Vtr(Store):
     @classmethod
     def _plans(cls, url, extra_args):
         session = session_with_proxy(extra_args)
-        soup = BeautifulSoup(session.get(url).text, 'html.parser')
+        data = json.loads(session.get(
+            'https://www.vtr.com/ccstoreui/v1/products?categoryId='
+            'MovilesPlanes&fields=items.displayName%2Citems.listPrice').text)
         products = []
 
-        rows = soup.findAll('div', 'box-vertical-fijo')
-
         portability_suffixes = [
-            ('', 'data-not-ported'),
-            (' Portabilidad', 'data-ported')
-        ]
-        cuotas_suffixes = [
-            ' (sin cuota de arriendo)',
-            ' (con cuota de arriendo)'
+            ('', Decimal('0.9')),
+            (' Portabilidad', Decimal('0.7'))
         ]
 
-        for row in rows:
-            base_plan_name = ' '.join(
-                [x.replace('\n', '').strip()
-                 for x in row.find('li', 'gbs_text').text.split()]
-            )
-            price_container = row.find('div', 'price')
+        for item in data['items']:
+            base_plan_name = item['displayName']
+            base_price = Decimal(item['listPrice'])
 
-            for portability_suffix, price_field in portability_suffixes:
-                price = Decimal(remove_words(
-                    price_container[price_field]))
+            for portability_suffix, price_multiplier in portability_suffixes:
+                price = (base_price * price_multiplier).quantize(0)
+                plan_name = '{}{}'.format(base_plan_name, portability_suffix)
 
-                for cuota_suffix in cuotas_suffixes:
-                    plan_name = '{}{}{}'.format(
-                        base_plan_name, portability_suffix, cuota_suffix)
+                p = Product(
+                    plan_name,
+                    cls.__name__,
+                    'CellPlan',
+                    url,
+                    url,
+                    plan_name,
+                    -1,
+                    price,
+                    price,
+                    'CLP',
+                )
 
-                    p = Product(
-                        plan_name,
-                        cls.__name__,
-                        'CellPlan',
-                        url,
-                        url,
-                        plan_name,
-                        -1,
-                        price,
-                        price,
-                        'CLP',
-                    )
-
-                    products.append(p)
+                products.append(p)
 
         return products
 
@@ -130,132 +118,49 @@ class Vtr(Store):
         print(url)
         session = session_with_proxy(extra_args)
 
-        # TODO: Lo comentado aquí es lo que corresponde al uso de la API
-        # product_id = url.split('/')[-1]
-        # data_url = 'https://www.vtr.com/ccstoreui/v1/pages/product/{}?' \
-        #            'dataOnly=false&cacheableDataOnly=true&' \
-        #            'productTypesRequired=true'.format(product_id)
-        # response = session.get(data_url)
-        # product_data = json.loads(response.text)['data']['page']['product']
-        #
-        # base_name = product_data['displayName']
-        # sku = re.search(r'prod(\d+)', url).groups()[0]
-        #
-        # variants = product_data['childSKUs']
-        # plans = product_data['relatedProducts']
-        #
-        # for variant in variants:
-        #     name = "{} - {}".format(base_name, variant['x_device_color'])
-        #     cell_url = '{}?selection={}'.format(url, variant['x_colorClass'])
-        #
-        #     for plan in plans:
-        #         continue
+        product_id = url.split('/')[-1]
 
-        soup = BeautifulSoup(session.get(url).text, 'html.parser')
+        base_price_url = 'https://www.vtr.com/ccstoreui/v1/prices/{}'.format(
+            product_id)
+        price_data = json.loads(session.get(base_price_url).text)
+        normal_price = Decimal(price_data['priceMin'])
 
-        name = soup.find('h3', 'mep-model').text.strip()
-        sku = re.search(r'prod(\d+)', url).groups()[0]
+        data_url = 'https://www.vtr.com/ccstoreui/v1/pages/product/{}'.format(
+            product_id)
+        response = session.get(data_url)
+        product_data = json.loads(response.text)['data']['page']['product']
 
-        picture_urls = ['https://vtr.com' + tag['src'].strip().replace(
-            ' ', '%20') for tag in soup.findAll('img', 'color-0')]
+        base_name = product_data['displayName']
 
-        description = html_to_markdown(
-            str(soup.find('div', 'vtr-cont-planes')), 'https://vtr.com')
-
-        colors = []
-
-        for tag in soup.find('ul', 'devices-colors').findAll('li'):
-            if tag.find('div', 'saleOut'):
-                continue
-
-            colors.append(tag['color-name'])
-
-        plan_buttons = soup.findAll('button', 'c2cbtn')
+        variants = product_data['childSKUs']
+        plans = product_data['relatedProducts']
 
         products = []
 
-        for color in colors:
-            name_with_color = '{} - {}'.format(name, color)
-            cell_url = '{}?selection={}'.format(url, color)
+        for variant in variants:
+            name = '{} - {}'.format(base_name, variant['x_device_color'])
+            cell_url = '{}?selection={}'.format(url, variant['x_colorClass'])
 
-            for plan_button in plan_buttons:
-                # Sanity checks
-                assert plan_button['planpriceport'] == \
-                       plan_button['planpricenoport'] == \
-                       plan_button['planoriginprice']
-                assert plan_button['deviceprice'] == \
-                    plan_button['pixel-price'] == \
-                    plan_button['om-price'] == \
-                    plan_button['pieinicialprice']
+            for plan in plans:
+                print(json.dumps(plan, indent=2))
+                cell_plan_name = plan['displayName']
+                price = Decimal(plan['listPrice'])
 
-                parent_row = plan_button.findParent('tr')
-                if not parent_row:
-                    parent_row = plan_button.findParent()
-                parent_row_style = parent_row.get('style', '')
-
-                if 'display' in parent_row_style:
-                    continue
-
-                portability_name = plan_button['port']
-
-                if portability_name == 'Portados':
-                    name_suffix = ' Portabilidad'
-                    cell_monthly_payment_factor = Decimal('0.3')
-                elif portability_name == 'No Portados':
-                    name_suffix = ''
-                    cell_monthly_payment_factor = Decimal('0.1')
-                else:
-                    raise Exception('Invalid portability choice')
-
-                plan_name = 'VTR {}{}'.format(
-                    plan_button['planname'].strip(), name_suffix)
-
-                # Sin cuota de arriendo
-
-                price = Decimal(plan_button['devicefullprice']).quantize(0)
-
+                # Portabilidad
                 p = Product(
-                    name_with_color,
+                    name,
                     cls.__name__,
                     'Cell',
                     cell_url,
                     url,
-                    '{} {} {}'.format(sku, color, plan_name),
+                    '{} {} {} Portabilidad'.format(product_id, variant['x_device_color'], cell_plan_name),
                     -1,
-                    price,
-                    price,
+                    portability_price,
+                    portability_price,
                     'CLP',
-                    sku=sku,
-                    cell_plan_name=plan_name,
-                    picture_urls=picture_urls,
-                    description=description,
+                    sku=product_id,
+                    cell_plan_name=cell_plan_name,
                     cell_monthly_payment=Decimal(0)
-                )
-                products.append(p)
-
-                # Con cuota de arriendo
-
-                price = Decimal(plan_button['deviceprice']).quantize(0)
-                plan_base_price = Decimal(plan_button['planpriceport'])
-                cell_monthly_payment = \
-                    plan_base_price * cell_monthly_payment_factor
-
-                p = Product(
-                    name_with_color,
-                    cls.__name__,
-                    'Cell',
-                    cell_url,
-                    url,
-                    '{} {} {} Cuotas'.format(sku, color, plan_name),
-                    -1,
-                    price,
-                    price,
-                    'CLP',
-                    sku=sku,
-                    cell_plan_name=plan_name + ' Cuotas',
-                    picture_urls=picture_urls,
-                    description=description,
-                    cell_monthly_payment=cell_monthly_payment
                 )
                 products.append(p)
 
